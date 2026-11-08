@@ -104,7 +104,7 @@ form.addEventListener('submit',async function(e){
     confirmed=result;showSummary();document.getElementById('form-fields').style.display='none';
     document.getElementById('confirmation').classList.add('show');document.getElementById('confirmation-title').focus();
   }catch(err){say('uncertain');}
-  finally{sending=false;controls.forEach(el=>el.disabled=false);submitButton.disabled=false;}
+  finally{sending=false;controls.forEach(el=>el.disabled=false);timeInput.disabled=timeInput.options.length<2;submitButton.disabled=timeInput.disabled;}
 });
 function resetBooking(){
   form.reset();requestId='';fingerprint='';confirmed=null;document.getElementById('booking-summary').textContent='';
