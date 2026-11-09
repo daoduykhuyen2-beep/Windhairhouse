@@ -9,7 +9,7 @@ const TZ = 'Asia/Ho_Chi_Minh';
 const CAPACITY = 3;
 const STAFF = ['Phan Cường', 'Trung Ngọc', 'Đào Duy Khuyến'];
 const DURATIONS = {'Cắt tóc':60,'Uốn tóc':240,'Duỗi tóc':240,'Nhuộm tóc':90,'Tẩy + Nhuộm':360,'Nối tóc':240};
-const HEADERS = ['Thời gian gửi','Dịch vụ','Ngày hẹn','Khung giờ','Họ tên','Số điện thoại','Email','Lời nhắn','Trạng thái','Stylist','Thời lượng (phút)','Kết thúc','Mã lịch hẹn','Nhóm khách'];
+const HEADERS = ['Thời gian gửi','Dịch vụ','Ngày hẹn','Khung giờ','Họ tên','Số điện thoại','Email','Lời nhắn','Trạng thái','Stylist','Thời lượng (phút)','Kết thúc','Mã lịch hẹn','Nhóm khách','Mã yêu cầu nội bộ'];
 
 function json_(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
 function esc_(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -21,8 +21,25 @@ function getSheet_() {
     sh.getRange(1,1,1,HEADERS.length).setValues([HEADERS]).setFontWeight('bold').setBackground('#111111').setFontColor('#ffffff');
     sh.setFrozenRows(1);
   }
+  if(sh.getMaxColumns()<HEADERS.length)sh.insertColumnsAfter(sh.getMaxColumns(),HEADERS.length-sh.getMaxColumns());
+  if(sh.getRange(1,15).getValue()!==HEADERS[14])sh.getRange(1,15).setValue(HEADERS[14]).setFontWeight('bold').setBackground('#111111').setFontColor('#ffffff');
   return sh;
 }
+
+function nextBookingId_(sh) {
+  // Call only while holding the script lock. Never reuse a deleted booking number.
+  var props=PropertiesService.getScriptProperties();
+  var previous=Number(props.getProperty('WIND_LAST_BOOKING_NUMBER'))||0;
+  if(sh.getLastRow()>1)sh.getRange(2,13,sh.getLastRow()-1,1).getValues().forEach(function(r){
+    var value=String(r[0]);
+    if(/^[1-9][0-9]*$/.test(value))previous=Math.max(previous,Number(value));
+  });
+  if(!Number.isSafeInteger(previous)||previous>=Number.MAX_SAFE_INTEGER)throw Error('booking_number_limit');
+  var next=previous+1;
+  props.setProperty('WIND_LAST_BOOKING_NUMBER',String(next));
+  return String(next);
+}
+
 function dateKey_(v) {
   if(v instanceof Date) return Utilities.formatDate(v,TZ,'yyyy-MM-dd');
   var s=String(v || '').trim(), m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -115,7 +132,7 @@ function doPost(e) {
     if(d.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email))return json_({ok:false,error:'invalid_email'});
     if(!lock.tryLock(25000))return json_({ok:false,error:'busy'});
     var sh=getSheet_(),rows=rows_(sh);
-    var duplicate=rows.filter(function(r){return r.id===d.requestId;})[0];
+    var duplicate=rows.filter(function(r){return String(r.row[14]||r.id)===d.requestId;})[0];
     if(duplicate)return json_({ok:true,id:duplicate.id,stylist:duplicate.staff,date:dateKey_(duplicate.row[2]),time:timeKey_(duplicate.row[3]),service:String(duplicate.row[1])});
     var a=start_(d.date,d.time),b=a+DURATIONS[d.service]*60000;
     // A network retry with a new browser request ID must not create a duplicate.
@@ -123,8 +140,8 @@ function doPost(e) {
     if(same)return json_({ok:true,id:same.id||'existing',stylist:same.staff,date:d.date,time:d.time,service:d.service});
     assigned=assign_(rows,a,b,d.stylist||'auto',d.foreign===true);
     if(!assigned)return json_({ok:false,error:'slot_full'});
-    id=d.requestId;
-    sh.appendRow([Utilities.formatDate(new Date(),TZ,'dd/MM/yyyy HH:mm'),safe_(d.service),d.date,d.time,safe_(String(d.name).trim()),"'"+phone,safe_(d.email),safe_(d.note),'Đã xác nhận',assigned,DURATIONS[d.service],Utilities.formatDate(new Date(b),TZ,'yyyy-MM-dd HH:mm'),id,d.foreign===true?'Khách nước ngoài':'Khách Việt Nam']);
+    id=nextBookingId_(sh);
+    sh.appendRow([Utilities.formatDate(new Date(),TZ,'dd/MM/yyyy HH:mm'),safe_(d.service),d.date,d.time,safe_(String(d.name).trim()),"'"+phone,safe_(d.email),safe_(d.note),'Đã xác nhận',assigned,DURATIONS[d.service],Utilities.formatDate(new Date(b),TZ,'yyyy-MM-dd HH:mm'),id,d.foreign===true?'Khách nước ngoài':'Khách Việt Nam',d.requestId]);
     SpreadsheetApp.flush();saved=true;
   }catch(err){return json_({ok:false,error:saved?'notification_error':'server_error'});}
   finally {if(lock.hasLock())lock.releaseLock();}
@@ -205,7 +222,7 @@ function windAdminSave(d){
     var sh=getSheet_(),old=d.rowNo?checkedRow_(sh,d.rowNo,d.version):null;
     if(!old){
       if(!/^[a-zA-Z0-9-]{16,80}$/.test(d.requestId||''))throw Error('Vui lòng tải lại màn hình quản lý rồi lưu lịch.');
-      var prior=adminData_().values.filter(function(r){return String(r[12])===d.requestId;})[0];
+      var prior=adminData_().values.filter(function(r){return String(r[14]||r[12])===d.requestId;})[0];
       if(prior)return {ok:true,id:String(prior[12]),stylist:String(prior[9]),existing:true};
     }
     var duration=Number(d.duration),a=start_(String(d.date),String(d.time));
@@ -216,8 +233,8 @@ function windAdminSave(d){
     var assigned=assign_(rows,a,a+duration*60000,d.stylist||'auto',d.foreign===true);
     if(!assigned)throw Error('Stylist đã đủ khách hoặc chưa phù hợp điều kiện nhận khách. Chọn giờ/thợ khác.');
     var stamp=old?old[0]:Utilities.formatDate(new Date(),TZ,'dd/MM/yyyy HH:mm');
-    var id=old&&old[12]?old[12]:(d.requestId||'manual-'+Utilities.getUuid());
-    var row=[stamp,safe_(d.service),d.date,d.time,safe_(d.name),"'"+String(d.phone).replace(/\D/g,''),safe_(d.email),safe_(d.note),old&&!/^(Mới|Đã hủy|Đã huỷ|Không đến|cancelled|canceled)$/.test(String(old[8]))?old[8]:'Đã xác nhận',assigned,duration,Utilities.formatDate(new Date(a+duration*60000),TZ,'yyyy-MM-dd HH:mm'),id,d.foreign===true?'Khách nước ngoài':'Khách Việt Nam'];
+    var id=old&&old[12]?old[12]:nextBookingId_(sh);
+    var row=[stamp,safe_(d.service),d.date,d.time,safe_(d.name),"'"+String(d.phone).replace(/\D/g,''),safe_(d.email),safe_(d.note),old&&!/^(Mới|Đã hủy|Đã huỷ|Không đến|cancelled|canceled)$/.test(String(old[8]))?old[8]:'Đã xác nhận',assigned,duration,Utilities.formatDate(new Date(a+duration*60000),TZ,'yyyy-MM-dd HH:mm'),id,d.foreign===true?'Khách nước ngoài':'Khách Việt Nam',old?(old[14]||old[12]):d.requestId];
     if(old)sh.getRange(Number(d.rowNo),1,1,HEADERS.length).setValues([row]);else sh.appendRow(row);
     SpreadsheetApp.flush();return {ok:true,id:id,stylist:assigned};
   }finally{lock.releaseLock();}
